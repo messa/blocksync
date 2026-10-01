@@ -4,9 +4,18 @@ Copy large files (VM images, LVM snapshots etc.) between Linux servers.
 
 Features:
 
-- Encryption using TLS-PSK (requires Python 3.13+)
-- Compression using Zstandard (will use [backports.zstd](https://pypi.org/project/backports.zstd/) for Python 3.13)
+- Encryption using TLS-PSK
+- Compression using Zstandard (will use  for Python 3.13)
 - Incremental - only blocks with differing hash are transferred
+- Python standard library only - no libraries or venv required
+- Single `.py` file - trivial to copy or deploy wherever you need
+
+Python version support:
+
+- TLS-PSK support needs Python 3.13+
+- Zstandard support needs Python 3.14+, or 3.13 with [backports.zstd](https://pypi.org/project/backports.zstd/)
+- Python versions 3.12 and less are not supported
+  - Use `uvx --python 3.14` to run this script with managed Python
 
 ## Usage
 
@@ -15,10 +24,17 @@ Features:
 openssl rand -base64 512 > pre-shared-key
 
 # Source side
-blocksync.py serve --port 9001 --psk-file pre-shared-key --src-file /dev/vg0/vm_example_root
+blocksync.py serve \
+    --port 9001 \
+    --psk-file pre-shared-key \
+    --src-file /dev/vg0/vm_example_root
 
 # Target side
-blocksync.py retrieve --host source.example.com --port 9001 --psk-file pre-shared-key --target-file /dev/vg0/vm_example_root
+blocksync.py retrieve \
+    --host source.example.com \
+    --port 9001 \
+    --psk-file pre-shared-key \
+    --target-file /dev/vg0/vm_example_root
 ```
 
 ## Low-level details
