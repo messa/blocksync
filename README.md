@@ -20,3 +20,46 @@ blocksync.py serve --port 9001 --psk-file pre-shared-key --src-file /dev/vg0/vm_
 # Target side
 blocksync.py retrieve --host source.example.com --port 9001 --psk-file pre-shared-key --target-file /dev/vg0/vm_example_root
 ```
+
+## Low-level details
+
+### `serve`
+
+Listens on given TCP port. Incoming connections are wrapped in TLS-PSK using the pre-shared key.
+
+#### Protocol
+
+After client connects and TLS-PSK is successfully opened:
+
+1. Server sends `blocksync/1\n`
+2. Client sends command and server responds to it. Commands may be queued in the TCP connection.
+
+Commands:
+
+- `meta`
+  - Retrieve source file metadata
+  - Params: none
+  - Response:
+    - `length` (int32)
+    - `data` (of given `length`) - JSON-encoded object
+      - `"size"`: size of file in bytes
+- `retr`
+  - Retrieve source file block, if its hash differs
+  - Params:
+    - `offset` (int64)
+    - `length` (int32)
+    - `hash` (binary, 32 bytes) - SHA3-256 
+  - Response:
+    - `code` (1 byte)
+      - `\x00`: hash matches
+      - `\x01`: returning raw block data
+      - `\x02`: returning Zstandard-compressed block data 
+    - `length` (int32)
+    - `data` (of given `length`)
+
+### `retrieve`
+
+Connect to the server. Receive `blocksync/1\n`.
+Retrieve metadata (`meta`).
+
+Read the target file by blocks (parallelized - compute hashes in threads). For each block send a `retr` command to the server.
