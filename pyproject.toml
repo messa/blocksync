@@ -52,6 +52,9 @@ select = [
     "PT",  # flake8-pytest-style
     "RUF", # Ruff-specific rules
 ]
+ignore = [
+    "PT013", # prefer `from pytest import raises` style imports
+]
 
 [tool.ruff.format]
 quote-style = "single"

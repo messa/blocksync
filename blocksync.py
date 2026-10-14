@@ -4,15 +4,15 @@
 See README.md for usage and protocol description.
 """
 
-import argparse
+from argparse import ArgumentParser
 from collections.abc import Sequence
 from pathlib import Path
 
 DEFAULT_PORT = 9001
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog='blocksync.py', description=__doc__)
+def build_parser() -> ArgumentParser:
+    parser = ArgumentParser(prog='blocksync.py', description=__doc__)
     subparsers = parser.add_subparsers(dest='command', required=True)
 
     serve = subparsers.add_parser('serve', help='serve source file to clients')
