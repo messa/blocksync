@@ -91,3 +91,15 @@ The bottleneck should be disk read I/O or network speed.
 
 
 Read the target file by blocks (parallelized - compute hashes in threads). For each block send a `retr` command to the server.
+
+## Development
+
+Requires [uv](https://docs.astral.sh/uv/).
+
+```shell
+uv sync                    # create .venv with dev tools
+uv run ruff check          # lint
+uv run ruff format         # format
+uv run mypy                # type check
+uv run pytest              # tests
+```

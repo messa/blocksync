@@ -1,0 +1,68 @@
+[project]
+name = "blocksync"
+version = "0.1.0"
+description = "Copy large files (VM images, LVM snapshots etc.) between Linux servers."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Petr Messner" }]
+requires-python = ">=3.13"
+# Runtime uses the Python standard library only.
+dependencies = []
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+
+[project.urls]
+Repository = "https://github.com/messa/blocksync"
+
+[project.scripts]
+blocksync = "blocksync:main"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4",
+    "pytest>=9.1",
+    "ruff>=0.17",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["blocksync.py"]
+
+[tool.ruff]
+line-length = 150
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # Pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "SIM", # flake8-simplify
+    "PT",  # flake8-pytest-style
+    "RUF", # Ruff-specific rules
+]
+
+[tool.ruff.format]
+quote-style = "single"
+
+[tool.mypy]
+files = ["blocksync.py", "tests"]
+strict = true
+warn_unreachable = true
+
+[tool.pytest]
+minversion = "9.0"
+testpaths = ["tests"]
+addopts = ["-ra", "--import-mode=importlib"]
+strict = true
