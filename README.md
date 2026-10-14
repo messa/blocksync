@@ -56,26 +56,38 @@ Commands:
   - Retrieve source file metadata
   - Params: none
   - Response:
-    - `length` (int32)
+    - `length` (uint32): size of the next field in bytes
     - `data` (of given `length`) - JSON-encoded object
       - `"size"`: size of file in bytes
 - `retr`
   - Retrieve source file block, if its hash differs
   - Params:
-    - `offset` (int64)
-    - `length` (int32)
+    - `offset` (uint64): offset of the block in the file (in bytes)
+    - `length` (uint32): length of the block (in bytes)
     - `hash` (binary, 32 bytes) - SHA3-256 
   - Response:
     - `code` (1 byte)
-      - `\x00`: hash matches
-      - `\x01`: returning raw block data
-      - `\x02`: returning Zstandard-compressed block data 
-    - `length` (int32)
-    - `data` (of given `length`)
+      - `\x00`: hash matches, no data need to be returned
+      - `\x01`: hash mismatch, returning raw block data
+      - `\x02`: hash mismatch, returning Zstandard-compressed block data 
+    - `length` (uint32): size of `data` in bytes
+    - `data` (of given `length`): raw or zstd-compressed contents of the block, or nothing if the hash matches
+- `done`
+  - Transfer is completed
+  - Params: none
+  - Response:
+    - `ok` (1 byte): the value `b'1'`
+    - Both sides close the TCP connection.
 
 ### `retrieve`
 
-Connect to the server. Receive `blocksync/1\n`.
+Connect to the server.
+Receive `blocksync/1\n`.
 Retrieve metadata (`meta`).
+Read destination file/device blocks, compute hashes, send them to server (`retr`), receive source file/device data and save them.
+
+Block hashes are computed using a threadpool so that hashing does not become bottleneck.
+The bottleneck should be disk read I/O or network speed.
+
 
 Read the target file by blocks (parallelized - compute hashes in threads). For each block send a `retr` command to the server.
