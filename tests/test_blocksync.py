@@ -3,9 +3,9 @@ Tests of serve() and retrieve() running in-process over localhost.
 
 API expected by these tests:
 
-- `async def serve(*, src_file: Path, port: int, psk: str | None, ready: Callable[[int], object] | None = None) -> None`
+- `async def serve(*, src_file: Path, port: int, psk: str | None, on_listening: Callable[[int], object] | None = None) -> None`
   - `psk=None` means `--insecure`
-  - `port=0` chooses a random port; `ready` is called with the actual port once listening
+  - `port=0` chooses a random port; `on_listening` is called with the actual port once listening
   - returns after one successful transfer
 - `async def retrieve(*, host: str, port: int, psk: str | None, target_file: Path, block_size: int = ...) -> RetrieveStats`
 - `RetrieveStats` with attributes `unchanged_blocks`, `raw_blocks`, `compressed_blocks`
@@ -57,7 +57,7 @@ def run_with_timeout[T](coro: Coroutine[Any, Any, T]) -> T:
 
 async def start_server(src_file: Path, psk: str | None) -> tuple[Task[None], int]:
     port_future: Future[int] = get_running_loop().create_future()
-    server_task = create_task(serve(src_file=src_file, port=0, psk=psk, ready=port_future.set_result))
+    server_task = create_task(serve(src_file=src_file, port=0, psk=psk, on_listening=port_future.set_result))
     await wait([port_future, server_task], return_when=FIRST_COMPLETED)
     if server_task.done():
         server_task.result()
