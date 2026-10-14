@@ -4,7 +4,7 @@ Copy large files (VM images, LVM snapshots etc.) between Linux servers.
 
 Features:
 
-- Encryption using TLS-PSK
+- Encryption and authentication using TLS-PSK
 - Compression using Zstandard
 - Incremental - only blocks with differing hash are transferred
 - Python standard library only - no libraries or venv required
@@ -14,13 +14,34 @@ Python version support:
 
 - TLS-PSK support needs Python 3.13+
 - Zstandard support needs Python 3.14+, or 3.13 with [backports.zstd](https://pypi.org/project/backports.zstd/)
-- Python versions 3.12 and less are not supported
-  - Use `uvx --python 3.14` to run this script with managed Python
+- Both sides are expected to run the same Python version with the same packages
+- Python versions 3.12 and older are not supported
+  - Use `uv run --python 3.14 blocksync.py ...` to run this script with managed Python
 
 ## Usage
 
+Simplest use - let `serve` choose a random port and generate a random pre-shared key:
+
 ```shell
-# Create pre-shared key file
+# Source side
+blocksync.py serve --src-file /dev/vg0/vm_example_root
+```
+
+`serve` prints a ready-to-use `retrieve` command, for example:
+
+```shell
+# Target side
+blocksync.py retrieve \
+    --host source.example.com \
+    --port 40123 \
+    --psk 'z8kQ...' \
+    --target-file /dev/vg0/vm_example_root
+```
+
+With an explicit port and a pre-shared key file:
+
+```shell
+# Create pre-shared key file and copy it to both sides
 openssl rand -base64 512 > pre-shared-key
 
 # Source side
@@ -39,23 +60,47 @@ blocksync.py retrieve \
 
 ## Low-level details
 
+### Pre-shared key
+
+The key is given by `--psk VALUE` or `--psk-file PATH`.
+Leading and trailing whitespace is stripped; the actual TLS key is SHA-256 of the remaining bytes.
+So `--psk VALUE` and `--psk-file` with a file containing `VALUE` are equivalent.
+
+TLS 1.3 is used, with PSK identity `blocksync`.
+
+If you specify `--insecure`, TLS-PSK is not used and no pre-shared key is needed.
+`--insecure` must be used on both sides.
+Use `--insecure` only over secure connections, e.g. VPN.
+
+Options `--psk`, `--psk-file` and `--insecure` are mutually exclusive.
+
 ### `serve`
 
-Listens on given TCP port. Incoming connections are wrapped in TLS-PSK using the pre-shared key.
+Listens on the given TCP port (all interfaces, IPv4 and IPv6).
+Incoming connections are wrapped in TLS-PSK using the pre-shared key.
 
-If you don't provide `--port`, a random unused TCP port number will be chosen.
+If you don't provide `--port`, a random unused TCP port is chosen.
 
-If you don't provide `--psk` or `--psk-file`, a random key will be generated and printed to stdout.
+If you don't provide `--psk`, `--psk-file` or `--insecure`, a random key is generated.
 
-If you specify `--insecure`, TLS-PSK will not be used and no pre-shared key (`--psk` or `--psk-file`) will be needed.
-Use `--insecure` only over secure connections, e.g. VPN.
+On start, `serve` prints an example `retrieve` command to stdout.
+It contains the host name (FQDN) of the server, the port, the key option (including the generated key value) and the `--src-file` path as `--target-file`.
+Logs go to stderr.
+
+`serve` is single-purpose: it exits after one successful transfer (`done` command).
+Only one connection is handled at a time.
+Failed connections (wrong key, dropped connection, ...) are logged and `serve` keeps waiting, so `retrieve` can be simply run again.
 
 #### Protocol
 
-After client connects and TLS-PSK is successfully opened:
+After the client connects (and the TLS-PSK handshake succeeds, unless `--insecure` is used):
 
 1. Server sends `blocksync/1\n`
-2. Client sends command and server responds to it. Commands may be queued in the TCP connection.
+2. Client sends commands and server responds to them in the same order.
+   Client does not need to wait for a response before sending the next command (pipelining).
+
+Each command is 4 ASCII bytes followed by its params.
+All integers are unsigned big-endian.
 
 Commands:
 
@@ -63,15 +108,15 @@ Commands:
   - Retrieve source file metadata
   - Params: none
   - Response:
-    - `length` (uint32): size of the next field in bytes
-    - `data` (of given `length`) - JSON-encoded object
-      - `"size"`: size of file in bytes
+    - `length` (uint32): size of `data` in bytes
+    - `data` (of given `length`): UTF-8 JSON-encoded object
+      - `"size"`: size of the source file in bytes
 - `retr`
   - Retrieve source file block, if its hash differs
   - Params:
     - `offset` (uint64): offset of the block in the file (in bytes)
-    - `length` (uint32): length of the block (in bytes)
-    - `hash` (binary, 32 bytes) - SHA3-256 
+    - `length` (uint32): length of the block (in bytes), at most 64 MiB
+    - `hash` (32 bytes): SHA3-256 of the target block contents
   - Response:
     - `code` (1 byte)
       - `\x00`: hash matches, no data need to be returned
@@ -79,6 +124,8 @@ Commands:
       - `\x02`: hash mismatch, returning Zstandard-compressed block data
     - `length` (uint32): size of `data` in bytes
     - `data` (of given `length`): raw or zstd-compressed contents of the block, or nothing if the hash matches
+  - Server returns compressed data only if it is smaller than raw data.
+  - The block must not extend beyond the end of the source file; otherwise the server closes the connection.
 - `done`
   - Transfer is completed
   - Params: none
@@ -86,21 +133,29 @@ Commands:
     - `ok` (1 byte): the value `b'1'`
     - Both sides close the TCP connection.
 
-If running under Python 3.13 and `backports.zstd` is not present, Zstandard compression will not be used.
+If running under Python 3.13 and `backports.zstd` is not present, Zstandard compression is not used.
 
 ### `retrieve`
 
-Connect to the server.
-Receive `blocksync/1\n`.
-Retrieve metadata (`meta`).
-Read destination file/device blocks, compute hashes, send them to server (`retr`), receive source file/device data and save them.
+Options `--host`, `--port` and one of `--psk`, `--psk-file` or `--insecure` are required.
 
-Block hashes are computed using a threadpool so that hashing does not become bottleneck.
+1. Connect to the server and receive `blocksync/1\n`.
+2. Retrieve metadata (`meta`).
+3. Check the target:
+   - Block device must be at least as large as the source file, otherwise `retrieve` ends with an error before writing anything.
+   - Regular file is created if it does not exist; it is never truncated before the transfer.
+4. Read target blocks (default block size 1 MiB, see `--block-size`), compute their hashes and send them to the server (`retr`).
+   A limited number of `retr` commands is sent ahead without waiting for responses.
+5. Receive responses and write changed blocks to the target in place.
+6. Send `done`, wait for the response, `fsync` the target.
+   A regular file is truncated to the source file size.
+
+Blocks are read and hashed using a thread pool so that hashing does not become a bottleneck.
 The bottleneck should be disk read I/O or network speed.
 
-Read the target file by blocks (parallelized - compute hashes in threads). For each block send a `retr` command to the server.
+Progress is printed to stderr.
 
-If running under Python 3.13 and `backports.zstd` is not present, receiving `retr` response with `code` `\x02` will end in error.
+If running under Python 3.13 and `backports.zstd` is not present, receiving a `retr` response with `code` `\x02` ends with an error.
 
 ## Development
 
