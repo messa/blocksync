@@ -76,7 +76,7 @@ Commands:
     - `code` (1 byte)
       - `\x00`: hash matches, no data need to be returned
       - `\x01`: hash mismatch, returning raw block data
-      - `\x02`: hash mismatch, returning Zstandard-compressed block data 
+      - `\x02`: hash mismatch, returning Zstandard-compressed block data
     - `length` (uint32): size of `data` in bytes
     - `data` (of given `length`): raw or zstd-compressed contents of the block, or nothing if the hash matches
 - `done`
@@ -85,6 +85,8 @@ Commands:
   - Response:
     - `ok` (1 byte): the value `b'1'`
     - Both sides close the TCP connection.
+
+If running under Python 3.13 and `backports.zstd` is not present, Zstandard compression will not be used.
 
 ### `retrieve`
 
@@ -96,8 +98,9 @@ Read destination file/device blocks, compute hashes, send them to server (`retr`
 Block hashes are computed using a threadpool so that hashing does not become bottleneck.
 The bottleneck should be disk read I/O or network speed.
 
-
 Read the target file by blocks (parallelized - compute hashes in threads). For each block send a `retr` command to the server.
+
+If running under Python 3.13 and `backports.zstd` is not present, receiving `retr` response with `code` `\x02` will end in error.
 
 ## Development
 
