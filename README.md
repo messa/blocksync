@@ -14,7 +14,6 @@ Python version support:
 
 - TLS-PSK support needs Python 3.13+
 - Zstandard support needs Python 3.14+, or 3.13 with [backports.zstd](https://pypi.org/project/backports.zstd/)
-- Both sides are expected to run the same Python version with the same packages
 - Python versions 3.12 and older are not supported
   - Use `uv run --python 3.14 blocksync.py ...` to run this script with managed Python
 
@@ -88,7 +87,6 @@ It contains the host name (FQDN) of the server, the port, the key option (includ
 Logs go to stderr.
 
 `serve` is single-purpose: it exits after one successful transfer (`done` command).
-Only one connection is handled at a time.
 Failed connections (wrong key, dropped connection, ...) are logged and `serve` keeps waiting, so `retrieve` can be simply run again.
 
 #### Protocol
