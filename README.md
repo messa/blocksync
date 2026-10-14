@@ -43,6 +43,13 @@ blocksync.py retrieve \
 
 Listens on given TCP port. Incoming connections are wrapped in TLS-PSK using the pre-shared key.
 
+If you don't provide `--port`, a random unused TCP port number will be chosen.
+
+If you don't provide `--psk` or `--psk-file`, a random key will be generated and printed to stdout.
+
+If you specify `--insecure`, TLS-PSK will not be used and no pre-shared key (`--psk` or `--psk-file`) will be needed.
+Use `--insecure` only over secure connections, e.g. VPN.
+
 #### Protocol
 
 After client connects and TLS-PSK is successfully opened:
