@@ -5,7 +5,7 @@ Copy large files (VM images, LVM snapshots etc.) between Linux servers.
 Features:
 
 - Encryption using TLS-PSK
-- Compression using Zstandard (will use  for Python 3.13)
+- Compression using Zstandard
 - Incremental - only blocks with differing hash are transferred
 - Python standard library only - no libraries or venv required
 - Single `.py` file - trivial to copy or deploy wherever you need
