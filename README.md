@@ -40,6 +40,8 @@ Non-goals and limitations:
   blocksync does not detect a changing source; the result would be an inconsistent copy.
 - Pull only: the target side (`retrieve`) connects to the source side (`serve`).
   The target must be able to reach the TCP port of the source; there is no reverse mode.
+  If the source is behind NAT, consider using IPv6 - it typically works
+  even between individual VMs on hosts that share a single IPv4 address.
 - One file per run. No directories, no file metadata (owner, permissions, mtime).
 - No continuous replication - `serve` exits after one successful transfer.
 - Holes in sparse files are not preserved and no discard/TRIM is issued:
@@ -79,6 +81,7 @@ blocksync.py retrieve \
 
 The printed host name is the FQDN as the source server knows it.
 It may not be resolvable or reachable from the target - replace it with a suitable host name or IP address if needed.
+`serve` listens on both IPv4 and IPv6, so an IPv6 address can be used as `--host` when the source has no public IPv4 address.
 
 With an explicit port and a pre-shared key file:
 
