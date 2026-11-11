@@ -13,10 +13,6 @@ flowchart LR
     retrieve -- "connects (TCP, TLS-PSK)" --> serve
 ```
 
-> **Status: work in progress.**
-> This README describes the agreed design.
-> `blocksync.py` is only a skeleton so far - `serve` and `retrieve` are not implemented yet.
-
 Features:
 
 - Encryption and authentication using TLS-PSK
@@ -218,6 +214,7 @@ When one connection completes the transfer (`done`), `serve` closes all other co
 
 A connection is closed if the TLS handshake does not finish within 30 seconds
 or if no complete command is received for 5 minutes.
+The same applies to a client that does not read any response data for 5 minutes.
 
 #### Protocol
 
@@ -334,8 +331,25 @@ Options `--host`, `--port` and one of `--psk`, `--psk-file` or `--insecure` are 
 The destination is synced before `done` is sent, because `serve` exits after `done`.
 If the truncate or `fsync` fails, `serve` is still running and `retrieve` can be run again.
 
-Blocks are read and hashed using a thread pool so that hashing does not become a bottleneck.
-The bottleneck should be disk read I/O or network speed.
+### Performance
+
+The bottleneck should be disk read I/O or network speed, not the CPU:
+
+- A single connection is used, with pipelining: up to 64 blocks (at most 256 MiB) are "in flight",
+  i.e. requested by `retr` and not completely processed yet.
+- `retrieve` reads and hashes destination blocks in a thread pool, several blocks ahead,
+  and sends the `retr` commands in the order of the blocks.
+  Received blocks are decompressed and written in the thread pool, too.
+- `serve` processes pipelined `retr` commands in a thread pool as well - source blocks are read, hashed and compressed
+  in parallel - and sends the responses in the order of the commands.
+  It stops reading further commands while 64 blocks (or 256 MiB) are waiting to be processed and sent.
+- Disk I/O, SHA3-256 and Zstandard release the GIL, so the threads really run in parallel.
+  The thread pool has `min(32, CPU count + 4)` threads.
+
+What remains single-threaded is the network I/O of the connection, including TLS encryption.
+
+Very small blocks are slow, because each block has a fixed overhead and only 64 blocks are in flight.
+Practical block sizes start at about 128 KiB.
 
 Progress is printed to stderr.
 

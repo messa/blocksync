@@ -11,9 +11,23 @@ API expected by these tests:
 - `RetrieveStats` with attributes `unchanged_blocks`, `raw_blocks`, `compressed_blocks`
 """
 
-from asyncio import FIRST_COMPLETED, Future, StreamReader, StreamWriter, Task, create_task, get_running_loop, open_connection, run, timeout, wait
+from asyncio import (
+    FIRST_COMPLETED,
+    Future,
+    StreamReader,
+    StreamWriter,
+    Task,
+    create_task,
+    get_running_loop,
+    open_connection,
+    run,
+    sleep,
+    timeout,
+    wait,
+)
 from collections.abc import Callable, Coroutine
 from contextlib import suppress
+from gc import collect
 from hashlib import sha3_256
 from importlib import import_module
 from json import loads
@@ -23,9 +37,10 @@ from struct import pack, unpack
 from types import ModuleType
 from typing import Any
 
-from pytest import mark, raises
+from pytest import LogCaptureFixture, MonkeyPatch, mark, raises
 
-from blocksync import RetrieveStats, retrieve, serve
+import blocksync
+from blocksync import BlocksyncError, RetrieveStats, retrieve, serve
 
 BLOCK_SIZE = 4096
 TIMEOUT = 10
@@ -58,7 +73,8 @@ def run_with_timeout[T](coro: Coroutine[Any, Any, T]) -> T:
 async def start_server(src_file: Path, psk: str | None) -> tuple[Task[None], int]:
     port_future: Future[int] = get_running_loop().create_future()
     server_task = create_task(serve(src_file=src_file, port=0, psk=psk, on_listening=port_future.set_result))
-    await wait([port_future, server_task], return_when=FIRST_COMPLETED)
+    futures: list[Future[Any]] = [port_future, server_task]
+    await wait(futures, return_when=FIRST_COMPLETED)
     if server_task.done():
         server_task.result()
         raise AssertionError('serve() returned before listening')
@@ -146,6 +162,88 @@ def test_wrong_key_fails_and_server_keeps_waiting(tmp_path: Path) -> None:
 
     run_with_timeout(scenario())
     assert dst.read_bytes() == SOURCE
+
+
+def test_wrong_key_error_message_mentions_the_key(tmp_path: Path) -> None:
+    src = tmp_path / 'src'
+    src.write_bytes(SOURCE)
+
+    async def scenario() -> None:
+        server_task, port = await start_server(src, 'right')
+        try:
+            with raises(OSError, match='wrong pre-shared key'):
+                await retrieve(host='127.0.0.1', port=port, psk='wrong', dst_file=tmp_path / 'dst', block_size=BLOCK_SIZE)
+        finally:
+            server_task.cancel()
+
+    run_with_timeout(scenario())
+
+
+def test_source_read_error_is_reported_to_client_and_server_keeps_waiting(tmp_path: Path) -> None:
+    src, dst = tmp_path / 'src', tmp_path / 'dst'
+    src.write_bytes(SOURCE)
+
+    async def scenario() -> None:
+        server_task, port = await start_server(src, 'secret')
+        try:
+            # serve already knows the size, so reading of the last blocks fails
+            src.write_bytes(SOURCE[: 10 * BLOCK_SIZE])
+            with raises(BlocksyncError, match='Server error: Failed to read block'):
+                await retrieve(host='127.0.0.1', port=port, psk='secret', dst_file=dst, block_size=BLOCK_SIZE)
+            src.write_bytes(SOURCE)
+            await retrieve(host='127.0.0.1', port=port, psk='secret', dst_file=dst, block_size=BLOCK_SIZE)
+            await server_task
+        finally:
+            server_task.cancel()
+
+    run_with_timeout(scenario())
+    assert dst.read_bytes() == SOURCE
+
+
+def test_destination_read_error_is_raised_without_asyncio_complaints(tmp_path: Path, monkeypatch: MonkeyPatch, caplog: LogCaptureFixture) -> None:
+    src = tmp_path / 'src'
+    src.write_bytes(SOURCE)
+
+    def failing_read(fd: int, offset: int, length: int) -> bytes:
+        raise OSError(5, 'Input/output error')
+
+    monkeypatch.setattr(blocksync, 'read_and_hash_block', failing_read)
+
+    async def scenario() -> None:
+        server_task, port = await start_server(src, None)
+        try:
+            with raises(OSError, match='Input/output error'):
+                await retrieve(host='127.0.0.1', port=port, psk=None, dst_file=tmp_path / 'dst', block_size=BLOCK_SIZE)
+        finally:
+            server_task.cancel()
+
+    run_with_timeout(scenario())
+    collect()
+    assert 'never retrieved' not in caplog.text
+
+
+def test_client_that_does_not_read_responses_is_disconnected(tmp_path: Path, monkeypatch: MonkeyPatch, caplog: LogCaptureFixture) -> None:
+    block_size = 1024 * 1024
+    src = tmp_path / 'src'
+    src.write_bytes(Random(4).randbytes(block_size))
+    monkeypatch.setattr(blocksync, 'IDLE_TIMEOUT', 0.5)
+
+    async def scenario() -> None:
+        server_task, port = await start_server(src, psk=None)
+        try:
+            _reader, writer = await connect(port)
+            # more data than fits into the socket buffers
+            for _ in range(64):
+                writer.write(retr(0, block_size, bytes(32)))
+            await writer.drain()
+            while 'did not read any data' not in caplog.text:
+                await sleep(0.1)
+            writer.close()
+        finally:
+            server_task.cancel()
+
+    with caplog.at_level('WARNING', logger='blocksync'):
+        run_with_timeout(scenario())
 
 
 # Raw protocol tests - check the wire format as documented in README.md,
