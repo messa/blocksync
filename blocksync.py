@@ -76,6 +76,11 @@ STREAM_BUFFER_SIZE = 1024 * 1024
 
 
 def load_zstd() -> ModuleType | None:
+    """
+    Import the Zstandard module: from the standard library (Python 3.14+) or the backports.zstd package.
+
+    Returns None if neither is available; compression is then not used.
+    """
     for name in ('compression.zstd', 'backports.zstd'):
         try:
             return import_module(name)
@@ -92,11 +97,17 @@ class BlocksyncError(Exception):
 
 
 class ProtocolError(BlocksyncError):
-    pass
+    """
+    The other side sent something that is not allowed by the protocol.
+    """
 
 
 @dataclass
 class RetrieveStats:
+    """
+    Result of retrieve(): how many blocks were unchanged and how many were transferred.
+    """
+
     unchanged_blocks: int = 0
     raw_blocks: int = 0
     compressed_blocks: int = 0
@@ -121,6 +132,9 @@ def tls_key(psk: str | bytes) -> bytes:
 
 
 def server_ssl_context(psk: str | bytes) -> SSLContext:
+    """
+    TLS 1.3 context for `serve` that accepts only clients knowing the pre-shared key.
+    """
     key = tls_key(psk)
     context = SSLContext(PROTOCOL_TLS_SERVER)
     context.minimum_version = TLSVersion.TLSv1_3
@@ -130,6 +144,9 @@ def server_ssl_context(psk: str | bytes) -> SSLContext:
 
 
 def client_ssl_context(psk: str | bytes) -> SSLContext:
+    """
+    TLS 1.3 context for `retrieve` that accepts only a server knowing the pre-shared key.
+    """
     key = tls_key(psk)
     context = SSLContext(PROTOCOL_TLS_CLIENT)
     context.minimum_version = TLSVersion.TLSv1_3
@@ -160,6 +177,9 @@ def read_block(fd: int, offset: int, length: int) -> bytes:
 
 
 def write_block(fd: int, offset: int, data: bytes) -> None:
+    """
+    Write all the data to the file at the given offset.
+    """
     view = memoryview(data)
     while view:
         written = os.pwrite(fd, view, offset)
@@ -197,6 +217,12 @@ async def read_exactly(reader: StreamReader, length: int) -> bytes:
 
 
 async def close_stream(writer: StreamWriter, *, graceful: bool) -> None:
+    """
+    Close the connection.
+
+    graceful=True is for a finished transfer: buffered data are sent and the TLS session is shut down properly
+    (waiting at most 10 seconds). graceful=False is for errors: the connection is dropped immediately.
+    """
     if not graceful:
         writer.transport.abort()
         return
@@ -221,6 +247,10 @@ def mib(size: int) -> str:
 
 @dataclass
 class Response:
+    """
+    Response of the server to one command, ready to be sent.
+    """
+
     chunks: tuple[bytes, ...]
     budget: int = 0  # how many bytes to return to the ByteBudget after the response is sent
     final: bool = False  # close the connection after sending this response
@@ -315,6 +345,12 @@ class ServerConnection:
                 self.responses.get_nowait().cancel()
 
     async def read_commands(self) -> None:
+        """
+        Read commands and put (futures of) their responses to the queue, until `done` is received.
+
+        Raises ProtocolError for an invalid command; the connection is then closed without sending anything more.
+        `retr` commands are only validated here, the work is done by process_retr() in a worker thread.
+        """
         while True:
             command = await self.read_command()
             if command == b'meta':
@@ -339,6 +375,9 @@ class ServerConnection:
                 raise ProtocolError(f'unknown command {command!r}')
 
     async def read_command(self) -> bytes:
+        """
+        Read the 4 bytes of a command name. Fails if no command is received for IDLE_TIMEOUT seconds.
+        """
         while True:
             try:
                 async with timeout(IDLE_TIMEOUT):
@@ -350,11 +389,19 @@ class ServerConnection:
                     raise BlocksyncError(f'No command received for {IDLE_TIMEOUT} seconds') from None
 
     async def respond(self, response: Response) -> None:
+        """
+        Enqueue a response that is already known (i.e. not computed in a worker thread).
+        """
         future: Future[Response] = self.loop.create_future()
         future.set_result(response)
         await self.responses.put(future)
 
     async def write_responses(self) -> bool:
+        """
+        Send responses in the order of the commands, waiting for each one to be computed.
+
+        Ends after a final response (`done` or a read error) and returns True if it was `done`.
+        """
         while True:
             response = await (await self.responses.get())
             for chunk in response.chunks:
@@ -367,6 +414,10 @@ class ServerConnection:
 
 
 class Server:
+    """
+    State of `serve` shared by all connections: the source file, the thread pool and whether the transfer was completed.
+    """
+
     def __init__(self, src_fd: int, src_size: int, ssl_context: SSLContext | None, pool: ThreadPoolExecutor) -> None:
         self.src_fd = src_fd
         self.src_size = src_size
@@ -376,6 +427,12 @@ class Server:
         self.completed = Event()
 
     async def handle_connection(self, reader: StreamReader, writer: StreamWriter) -> None:
+        """
+        Handle one client connection from accept to close. Called by asyncio as a separate task for each connection.
+
+        A failed connection is only logged, the server keeps running. A connection that ends with `done` sets `self.completed`,
+        which makes serve() return.
+        """
         task = current_task()
         assert task
         self.tasks.add(task)
@@ -402,6 +459,12 @@ class Server:
 
 
 def create_listening_socket(bind: str | None, port: int) -> socket:
+    """
+    Create the listening socket of `serve`.
+
+    Without `bind`, one dual-stack socket accepts both IPv4 and IPv6 connections,
+    so that port 0 (random port) gives the same port number for both protocols.
+    """
     if bind is None:
         if has_dualstack_ipv6():
             return create_server(('::', port), family=AF_INET6, dualstack_ipv6=True)
@@ -449,6 +512,12 @@ async def serve(
 
 
 def open_dst(dst_file: Path, src_size: int) -> int:
+    """
+    Open the destination for reading and writing and return the file descriptor.
+
+    A regular file is created if it does not exist and it is never truncated here.
+    Anything else (block device) must be at least as large as the source; it is checked before anything is written.
+    """
     fd = os.open(dst_file, os.O_RDWR | os.O_CREAT, 0o600)
     try:
         if not S_ISREG(os.fstat(fd).st_mode):
@@ -462,16 +531,28 @@ def open_dst(dst_file: Path, src_size: int) -> int:
 
 
 def finish_dst(fd: int, src_size: int) -> None:
+    """
+    Finish the destination after all blocks were written: cut off a regular file longer than the source and fsync.
+    """
     if S_ISREG(os.fstat(fd).st_mode):
         os.ftruncate(fd, src_size)
     os.fsync(fd)
 
 
 def read_and_hash_block(fd: int, offset: int, length: int) -> bytes:
+    """
+    Return SHA3-256 of the destination block. Runs in a worker thread.
+
+    If the destination ends before the end of the block, the hash is computed from the data that is there;
+    it then does not match the source block and the block is transferred.
+    """
     return sha3_256(read_block(fd, offset, length)).digest()
 
 
 def store_block(fd: int, offset: int, length: int, data: bytes, compressed: bool) -> None:
+    """
+    Decompress the received block (if compressed), check its length and write it to the destination. Runs in a worker thread.
+    """
     if compressed:
         assert zstd
         data = zstd.decompress(data)
@@ -481,6 +562,9 @@ def store_block(fd: int, offset: int, length: int, data: bytes, compressed: bool
 
 
 def first_leaf_exception(group: BaseExceptionGroup) -> BaseException:
+    """
+    Return the first exception of an exception group that is not a group itself.
+    """
     e: BaseException = group
     while isinstance(e, BaseExceptionGroup):
         e = e.exceptions[0]
@@ -523,10 +607,16 @@ class Retrieval:
         self.done_bytes = 0
 
     def blocks(self) -> Iterator[tuple[int, int]]:
+        """
+        Offsets and lengths of all blocks. Only the last block may be shorter than the block size.
+        """
         for offset in range(0, self.src_size, self.block_size):
             yield offset, min(self.block_size, self.src_size - offset)
 
     async def run(self) -> RetrieveStats:
+        """
+        Synchronize all blocks. On return, all changed blocks are written to the destination (but not synced yet).
+        """
         try:
             async with TaskGroup() as group:
                 group.create_task(self.send_requests())
@@ -537,6 +627,12 @@ class Retrieval:
         return self.stats
 
     async def send_requests(self) -> None:
+        """
+        Hash destination blocks in worker threads and send `retr` commands in the order of the blocks.
+
+        Hashing runs up to 2 * WORKER_COUNT blocks ahead of sending. Sending waits while the window is full,
+        i.e. while too many blocks are waiting for a response or for being written.
+        """
         hashing: Queue[tuple[int, int, Future[bytes]]] = Queue(2 * WORKER_COUNT)
 
         async def start_hashing() -> None:
@@ -559,6 +655,11 @@ class Retrieval:
                 hashing.get_nowait()[2].cancel()
 
     async def receive_responses(self) -> None:
+        """
+        Receive the response to each `retr` command and start writing of changed blocks in worker threads.
+
+        Returns after all blocks are written.
+        """
         async with TaskGroup() as writes:
             for _ in range(self.block_count):
                 # The idle timeout is not running while there is nothing to wait for
@@ -590,6 +691,9 @@ class Retrieval:
                     raise ProtocolError(f'Received unknown response code {code}')
 
     async def store(self, offset: int, length: int, data: bytes, compressed: bool) -> None:
+        """
+        Write one received block (in a worker thread) and update the stats.
+        """
         await self.loop.run_in_executor(self.pool, store_block, self.dst_fd, offset, length, data, compressed)
         if compressed:
             self.stats.compressed_blocks += 1
@@ -599,6 +703,9 @@ class Retrieval:
         self.block_done(length)
 
     def block_done(self, length: int) -> None:
+        """
+        Called when a block is completely processed: frees its place in the window and logs progress from time to time.
+        """
         self.window.release()
         self.done_bytes += length
         now = monotonic()
@@ -679,6 +786,9 @@ async def retrieve(
 
 
 def build_parser() -> ArgumentParser:
+    """
+    Command line parser with the `serve` and `retrieve` subcommands. See README.md for the options.
+    """
     parser = ArgumentParser(prog='blocksync.py', description=__doc__, formatter_class=RawDescriptionHelpFormatter)
     subparsers = parser.add_subparsers(dest='command', required=True)
 
@@ -704,6 +814,9 @@ def build_parser() -> ArgumentParser:
 
 
 def add_key_options(parser: ArgumentParser, *, required: bool) -> None:
+    """
+    Add the mutually exclusive options --psk, --psk-file and --insecure.
+    """
     group = parser.add_mutually_exclusive_group(required=required)
     group.add_argument('--psk', metavar='VALUE', help='pre-shared key value')
     group.add_argument('--psk-file', metavar='PATH', type=Path, help='file containing the pre-shared key')
@@ -756,6 +869,11 @@ def psk_from_args(args: Namespace) -> str | bytes | None:
 
 
 async def serve_command(args: Namespace) -> None:
+    """
+    The `serve` subcommand: run serve() and print a ready-to-use `retrieve` command to stdout once listening.
+
+    If no key option is given, a random pre-shared key is generated (and printed as a part of the command).
+    """
     psk = psk_from_args(args)
     if psk is not None:
         tls_key(psk)  # fail early if the key is empty
@@ -783,10 +901,18 @@ async def serve_command(args: Namespace) -> None:
 
 
 async def retrieve_command(args: Namespace) -> None:
+    """
+    The `retrieve` subcommand.
+    """
     await retrieve(host=args.host, port=args.port, psk=psk_from_args(args), dst_file=args.dst_file, block_size=args.block_size)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """
+    Command line entry point. Returns the exit code: 0 for success, 1 for error (which is logged to stderr).
+
+    Invalid options end with SystemExit(2) raised by argparse.
+    """
     args = build_parser().parse_args(argv)
     basicConfig(level=INFO, format='%(asctime)s %(levelname)s: %(message)s')
     try:
