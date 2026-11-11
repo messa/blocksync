@@ -4,10 +4,10 @@ Copy large files (VM images, LVM snapshots etc.) between Linux servers.
 
 ```mermaid
 flowchart LR
-    subgraph target [Target server]
+    subgraph target [Target host]
         tgt[(target file)] --- retrieve[blocksync.py retrieve]
     end
-    subgraph source [Source server]
+    subgraph source [Source host]
         serve[blocksync.py serve] --- src[(source file)]
     end
     retrieve -- "connects (TCP, TLS-PSK)" --> serve
@@ -91,7 +91,7 @@ blocksync.py retrieve \
     --target-file /dev/vg0/vm_example_root
 ```
 
-The printed host name is the FQDN as the source server knows it.
+The printed host name is the FQDN as the source host knows it.
 It may not be resolvable or reachable from the target - replace it with a suitable host name or IP address if needed.
 `serve` listens on both IPv4 and IPv6, so an IPv6 address can be used as `--host` when the source has no public IPv4 address.
 
@@ -134,8 +134,8 @@ If none of `--psk`, `--psk-file` and `--insecure` is given, `serve` generates a 
 
 | Option | Description |
 | --- | --- |
-| `--host HOST` | Host name or IP address of the source server. Required. |
-| `--port PORT` | TCP port of the source server. Required. |
+| `--host HOST` | Host name or IP address of the source host. Required. |
+| `--port PORT` | TCP port of the source host. Required. |
 | `--target-file PATH` | Target file or block device. Required. |
 | `--psk VALUE` | Pre-shared key. |
 | `--psk-file PATH` | File containing the pre-shared key. |
@@ -233,8 +233,8 @@ Typical session:
 
 ```mermaid
 sequenceDiagram
-    participant T as Target server<br/>blocksync.py retrieve
-    participant S as Source server<br/>blocksync.py serve
+    participant T as Client<br/>blocksync.py retrieve
+    participant S as Server<br/>blocksync.py serve
     T->>S: connect (TCP, TLS-PSK)
     T->>S: meta
     S-->>T: source file size
