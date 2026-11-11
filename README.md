@@ -35,7 +35,7 @@ Python version support:
 ## Goals and non-goals
 
 blocksync is meant for one-off copying of one large file or block device to another server,
-especially when a (possibly outdated) copy already exists on the destination, so that only the changed blocks need to be transferred.
+especially when a (possibly outdated) copy already exists on the destination host, so that only the changed blocks need to be transferred.
 
 Why not something else:
 
@@ -50,7 +50,7 @@ Non-goals and limitations:
   Use a snapshot (e.g. LVM snapshot) or stop whatever writes to the source.
   blocksync does not detect a changing source; the result would be an inconsistent copy.
 - Pull only: the destination side (`retrieve`) connects to the source side (`serve`).
-  The destination must be able to reach the TCP port of the source; there is no reverse mode.
+  The destination host must be able to reach the TCP port of the source host; there is no reverse mode.
   If the source is behind NAT, consider using IPv6 - it typically works
   even between individual VMs on hosts that share a single IPv4 address.
   Another option is a VPN such as [Tailscale](https://tailscale.com/), which connects servers behind NAT directly to each other.
@@ -92,7 +92,7 @@ blocksync.py retrieve \
 ```
 
 The printed host name is the FQDN as the source host knows it.
-It may not be resolvable or reachable from the destination - replace it with a suitable host name or IP address if needed.
+It may not be resolvable or reachable from the destination host - replace it with a suitable host name or IP address if needed.
 `serve` listens on both IPv4 and IPv6, so an IPv6 address can be used as `--host` when the source has no public IPv4 address.
 
 With an explicit port and a pre-shared key file:
@@ -207,7 +207,7 @@ If you don't provide `--port`, a random unused TCP port is chosen.
 If you don't provide `--psk`, `--psk-file` or `--insecure`, a random key is generated.
 
 On start, `serve` prints an example `retrieve` command to stdout.
-It contains the host name (FQDN) of the server, the port, the key option (including the generated key value) and the `--src-file` path as `--dst-file`.
+It contains the host name (FQDN) of the source host, the port, the key option (including the generated key value) and the `--src-file` path as `--dst-file`.
 Logs go to stderr.
 
 `serve` is single-purpose: it exits after one successful transfer (`done` command).
@@ -233,25 +233,31 @@ Typical session:
 
 ```mermaid
 sequenceDiagram
-    participant T as Client<br/>blocksync.py retrieve
+    participant C as Client<br/>blocksync.py retrieve
     participant S as Server<br/>blocksync.py serve
-    T->>S: connect (TCP, TLS-PSK)
-    T->>S: meta
-    S-->>T: source file size
+    C->>S: connect (TCP, TLS-PSK)
+    S-->>C: blocksync/1
+    C->>S: meta
+    S-->>C: source file size
     loop for each block (1 MiB by default)
-        Note over T: read block of destination file,<br/>compute its SHA3-256 hash
-        T->>S: retr - offset, length, hash
+        Note over C: read block of destination file,<br/>compute its SHA3-256 hash
+        C->>S: retr - offset, length, hash
         Note over S: read block of source file,<br/>compare hashes
         alt hash matches
-            S-->>T: no data needed
+            S-->>C: no data needed
         else hash differs
-            S-->>T: block data (zstd-compressed)
-            Note over T: write block to destination file
+            S-->>C: block data (raw or zstd-compressed)
+            Note over C: write block to destination file
         end
     end
-    T->>S: done
+    Note over C: truncate destination file<br/>to source file size, fsync
+    C->>S: done
+    S-->>C: ok
     Note over S: exit
 ```
+
+The diagram is simplified: the client actually sends several `retr` commands ahead
+without waiting for responses (pipelining), and the `nozs` command and error responses are not shown.
 
 Each command is 4 ASCII bytes followed by its params.
 All integers are unsigned big-endian.
