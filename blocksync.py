@@ -44,6 +44,17 @@ def add_key_options(parser: ArgumentParser, *, required: bool) -> None:
 
 
 def port_number(value: str) -> int:
+    """
+    Argparse `type=` converter for `--port`.
+
+    Converts the option value to int and checks it is a valid TCP port (1-65535).
+    Doing the check here means an invalid port is reported as a normal usage error
+    (with exit code 2) when the arguments are parsed, not as a confusing error from
+    the socket layer later.
+
+    Port 0 is rejected on purpose: for `serve`, a random port is chosen by omitting
+    `--port`; for `retrieve`, connecting to port 0 makes no sense.
+    """
     port = int(value)
     if not 0 < port < 65536:
         raise ArgumentTypeError(f'port must be between 1 and 65535: {value}')
@@ -51,6 +62,15 @@ def port_number(value: str) -> int:
 
 
 def block_size(value: str) -> int:
+    """
+    Argparse `type=` converter for `retrieve --block-size`.
+
+    Converts the option value to int and checks it is between 1 byte and MAX_BLOCK_SIZE.
+    The upper limit comes from the protocol: the `retr` command allows blocks of
+    at most 64 MiB (see README.md), so a larger block size could never work.
+    A zero or negative block size would make no progress through the file.
+    Checking it here reports the problem as a usage error before any connection is made.
+    """
     size = int(value)
     if not 0 < size <= MAX_BLOCK_SIZE:
         raise ArgumentTypeError(f'block size must be between 1 and {MAX_BLOCK_SIZE}: {value}')
