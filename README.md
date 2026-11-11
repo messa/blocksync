@@ -214,6 +214,7 @@ When one connection completes the transfer (`done`), `serve` closes all other co
 
 A connection is closed if the TLS handshake does not finish within 30 seconds
 or if no complete command is received for 5 minutes.
+The same applies to a client that does not read any response data for 5 minutes.
 
 #### Protocol
 
@@ -346,6 +347,9 @@ The bottleneck should be disk read I/O or network speed, not the CPU:
   The thread pool has `min(32, CPU count + 4)` threads.
 
 What remains single-threaded is the network I/O of the connection, including TLS encryption.
+
+Very small blocks are slow, because each block has a fixed overhead and only 64 blocks are in flight.
+Practical block sizes start at about 128 KiB.
 
 Progress is printed to stderr.
 

@@ -39,7 +39,7 @@ from pathlib import Path
 from secrets import token_urlsafe
 from shlex import quote
 from socket import AF_INET, AF_INET6, create_server, getfqdn, has_dualstack_ipv6, socket
-from ssl import PROTOCOL_TLS_CLIENT, PROTOCOL_TLS_SERVER, SSLContext, TLSVersion
+from ssl import PROTOCOL_TLS_CLIENT, PROTOCOL_TLS_SERVER, SSLContext, SSLError, TLSVersion
 from stat import S_ISREG
 from struct import pack, unpack
 from time import monotonic
@@ -62,6 +62,7 @@ CODE_ERROR = 3
 HANDSHAKE_TIMEOUT = 30
 IDLE_TIMEOUT = 5 * 60
 PROGRESS_INTERVAL = 5
+ERROR_LINGER_TIMEOUT = 10
 
 # Threads are used for everything that releases the GIL: disk I/O, hashing and (de)compression.
 WORKER_COUNT = min(32, (os.process_cpu_count() or 1) + 4)
@@ -406,11 +407,26 @@ class ServerConnection:
             response = await (await self.responses.get())
             for chunk in response.chunks:
                 self.writer.write(chunk)
-            await self.writer.drain()
+            await self.drain()
             self.budget.release(response.budget)
             self.last_activity = monotonic()
             if response.final:
                 return response.transfer_completed
+
+    async def drain(self) -> None:
+        """
+        Wait until the response is (mostly) sent. Fails if the client does not read any data for IDLE_TIMEOUT seconds.
+        """
+        while True:
+            buffered = self.writer.transport.get_write_buffer_size()
+            try:
+                async with timeout(IDLE_TIMEOUT):
+                    await self.writer.drain()
+                    return
+            except TimeoutError:
+                # A slow connection is fine as long as some data are getting through
+                if self.writer.transport.get_write_buffer_size() >= buffered:
+                    raise BlocksyncError(f'The client did not read any data for {IDLE_TIMEOUT} seconds') from None
 
 
 class Server:
@@ -450,8 +466,16 @@ class Server:
                 await close_stream(writer, graceful=True)
                 logger.info('Transfer completed by %s', peer)
                 self.completed.set()
+            else:
+                # An error response was sent. Closing the connection now, with pipelined commands still unread,
+                # would reset it and the client might never see the response - so wait for the client to close it.
+                logger.warning('Connection from %s failed: could not read the source file', peer)
+                with suppress(OSError, TimeoutError):
+                    async with timeout(ERROR_LINGER_TIMEOUT):
+                        while await reader.read(STREAM_BUFFER_SIZE):
+                            pass
         except (BlocksyncError, OSError, EOFError, TimeoutError) as e:
-            logger.warning('Connection from %s failed: %s', peer, e or type(e).__name__)
+            logger.warning('Connection from %s failed: %s', peer, str(e) or type(e).__name__)
         finally:
             self.tasks.discard(task)
             if not graceful:
@@ -637,7 +661,11 @@ class Retrieval:
 
         async def start_hashing() -> None:
             for offset, length in self.blocks():
-                await hashing.put((offset, length, self.loop.run_in_executor(self.pool, read_and_hash_block, self.dst_fd, offset, length)))
+                future = self.loop.run_in_executor(self.pool, read_and_hash_block, self.dst_fd, offset, length)
+                # If the transfer fails, nobody waits for the blocks hashed ahead;
+                # retrieve their exceptions so that asyncio does not complain
+                future.add_done_callback(lambda f: f.cancelled() or f.exception())
+                await hashing.put((offset, length, future))
 
         hashing_task = create_task(start_hashing())
         try:
@@ -651,6 +679,7 @@ class Retrieval:
             await hashing_task
         finally:
             hashing_task.cancel()
+            await gather(hashing_task, return_exceptions=True)
             while not hashing.empty():
                 hashing.get_nowait()[2].cancel()
 
@@ -739,9 +768,12 @@ async def retrieve(
     if psk is None:
         reader, writer = await open_connection(host, port, limit=STREAM_BUFFER_SIZE)
     else:
-        reader, writer = await open_connection(
-            host, port, limit=STREAM_BUFFER_SIZE, ssl=client_ssl_context(psk), ssl_handshake_timeout=HANDSHAKE_TIMEOUT
-        )
+        ssl_context = client_ssl_context(psk)
+        try:
+            reader, writer = await open_connection(host, port, limit=STREAM_BUFFER_SIZE, ssl=ssl_context, ssl_handshake_timeout=HANDSHAKE_TIMEOUT)
+        except (SSLError, ConnectionResetError) as e:
+            # The server just drops the connection if the key does not match
+            raise ConnectionError(f'TLS handshake failed - wrong pre-shared key? ({str(e) or type(e).__name__})') from e
     graceful = False
     try:
         if await read_exactly(reader, len(GREETING)) != GREETING:
@@ -921,7 +953,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         logger.error('Interrupted')
         return 1
     except (BlocksyncError, OSError, EOFError) as e:
-        logger.error('%s', e or type(e).__name__)
+        logger.error('%s', str(e) or type(e).__name__)
         return 1
     return 0
 
