@@ -252,7 +252,7 @@ class ByteBudget:
             self.waiter.set_result(None)
 
 
-def process_retr(fd: int, offset: int, length: int, target_hash: bytes, use_zstd: bool) -> Response:
+def process_retr(fd: int, offset: int, length: int, dst_hash: bytes, use_zstd: bool) -> Response:
     """
     Compute the response to a `retr` command. Runs in a worker thread.
     """
@@ -264,7 +264,7 @@ def process_retr(fd: int, offset: int, length: int, target_hash: bytes, use_zstd
         logger.error('Failed to read source block at offset %d: %s', offset, e)
         message = f'Failed to read block at offset {offset}: {e}'.encode()
         return Response((pack('>BI', CODE_ERROR, len(message)), message), budget=length, final=True)
-    if sha3_256(data).digest() == target_hash:
+    if sha3_256(data).digest() == dst_hash:
         return Response((pack('>BI', CODE_UNCHANGED, 0),), budget=length)
     if use_zstd and zstd:
         compressed: bytes = zstd.compress(data)
@@ -324,14 +324,14 @@ class ServerConnection:
                 self.use_zstd = False
                 await self.respond(Response((b'1',)))
             elif command == b'retr':
-                offset, length, target_hash = unpack(f'>QI{HASH_SIZE}s', await read_exactly(self.reader, 12 + HASH_SIZE))
+                offset, length, dst_hash = unpack(f'>QI{HASH_SIZE}s', await read_exactly(self.reader, 12 + HASH_SIZE))
                 if not 0 < length <= MAX_BLOCK_SIZE:
                     raise ProtocolError(f'retr with invalid length {length}')
                 if offset + length > self.src_size:
                     raise ProtocolError(f'retr beyond the end of the source file (offset {offset}, length {length})')
                 # Backpressure: stop reading commands when too much data is waiting to be processed and sent
                 await self.budget.acquire(length)
-                await self.responses.put(self.loop.run_in_executor(self.pool, process_retr, self.src_fd, offset, length, target_hash, self.use_zstd))
+                await self.responses.put(self.loop.run_in_executor(self.pool, process_retr, self.src_fd, offset, length, dst_hash, self.use_zstd))
             elif command == b'done':
                 await self.respond(Response((b'1',), final=True, transfer_completed=True))
                 return
@@ -448,20 +448,20 @@ async def serve(
 # Retrieve
 
 
-def open_target(target_file: Path, src_size: int) -> int:
-    fd = os.open(target_file, os.O_RDWR | os.O_CREAT, 0o600)
+def open_dst(dst_file: Path, src_size: int) -> int:
+    fd = os.open(dst_file, os.O_RDWR | os.O_CREAT, 0o600)
     try:
         if not S_ISREG(os.fstat(fd).st_mode):
-            target_size = file_size(fd)
-            if target_size < src_size:
-                raise BlocksyncError(f'Target {target_file} is too small: {target_size} bytes, the source has {src_size} bytes')
+            dst_size = file_size(fd)
+            if dst_size < src_size:
+                raise BlocksyncError(f'Destination {dst_file} is too small: {dst_size} bytes, the source has {src_size} bytes')
     except BaseException:
         os.close(fd)
         raise
     return fd
 
 
-def finish_target(fd: int, src_size: int) -> None:
+def finish_dst(fd: int, src_size: int) -> None:
     if S_ISREG(os.fstat(fd).st_mode):
         os.ftruncate(fd, src_size)
     os.fsync(fd)
@@ -493,7 +493,7 @@ class Retrieval:
 
     It is a pipeline:
 
-    1. Target blocks are read and hashed in worker threads, several blocks ahead.
+    1. Destination blocks are read and hashed in worker threads, several blocks ahead.
     2. `retr` commands are sent in the order of the blocks; at most `window` blocks may be in flight.
     3. Responses are received (in the same order) and changed blocks are decompressed and written in worker threads.
     """
@@ -502,14 +502,14 @@ class Retrieval:
         self,
         reader: StreamReader,
         writer: StreamWriter,
-        target_fd: int,
+        dst_fd: int,
         src_size: int,
         block_size: int,
         pool: ThreadPoolExecutor,
     ) -> None:
         self.reader = reader
         self.writer = writer
-        self.target_fd = target_fd
+        self.dst_fd = dst_fd
         self.src_size = src_size
         self.block_size = block_size
         self.pool = pool
@@ -541,7 +541,7 @@ class Retrieval:
 
         async def start_hashing() -> None:
             for offset, length in self.blocks():
-                await hashing.put((offset, length, self.loop.run_in_executor(self.pool, read_and_hash_block, self.target_fd, offset, length)))
+                await hashing.put((offset, length, self.loop.run_in_executor(self.pool, read_and_hash_block, self.dst_fd, offset, length)))
 
         hashing_task = create_task(start_hashing())
         try:
@@ -590,7 +590,7 @@ class Retrieval:
                     raise ProtocolError(f'Received unknown response code {code}')
 
     async def store(self, offset: int, length: int, data: bytes, compressed: bool) -> None:
-        await self.loop.run_in_executor(self.pool, store_block, self.target_fd, offset, length, data, compressed)
+        await self.loop.run_in_executor(self.pool, store_block, self.dst_fd, offset, length, data, compressed)
         if compressed:
             self.stats.compressed_blocks += 1
         else:
@@ -620,11 +620,11 @@ async def retrieve(
     host: str,
     port: int,
     psk: str | bytes | None,
-    target_file: Path,
+    dst_file: Path,
     block_size: int = DEFAULT_BLOCK_SIZE,
 ) -> RetrieveStats:
     """
-    Make the target file identical to the file served by serve() at the given host and port.
+    Make the destination file identical to the file served by serve() at the given host and port.
 
     psk=None means no TLS (--insecure).
     """
@@ -650,13 +650,13 @@ async def retrieve(
             raise ProtocolError('Unexpected response to nozs')
         logger.info('Source file size: %s', mib(src_size))
 
-        target_fd = open_target(target_file, src_size)
+        dst_fd = open_dst(dst_file, src_size)
         try:
             with ThreadPoolExecutor(WORKER_COUNT, thread_name_prefix='blocksync') as pool:
-                stats = await Retrieval(reader, writer, target_fd, src_size, block_size, pool).run()
-                await get_running_loop().run_in_executor(pool, finish_target, target_fd, src_size)
+                stats = await Retrieval(reader, writer, dst_fd, src_size, block_size, pool).run()
+                await get_running_loop().run_in_executor(pool, finish_dst, dst_fd, src_size)
         finally:
-            os.close(target_fd)
+            os.close(dst_fd)
 
         writer.write(b'done')
         if await read_exactly(reader, 1) != b'1':
@@ -692,7 +692,7 @@ def build_parser() -> ArgumentParser:
     retrieve.add_argument('--host', required=True, help='server host name or address')
     retrieve.add_argument('--port', type=port_number, required=True, help='server TCP port')
     add_key_options(retrieve, required=True)
-    retrieve.add_argument('--target-file', type=Path, required=True, help='target file or block device')
+    retrieve.add_argument('--dst-file', type=Path, required=True, help='destination file or block device')
     retrieve.add_argument(
         '--block-size',
         type=block_size,
@@ -774,16 +774,16 @@ async def serve_command(args: Namespace) -> None:
             f'--host {quote(getfqdn())}',
             f'--port {port}',
             key_option,
-            f'--target-file {quote(str(args.src_file))}',
+            f'--dst-file {quote(str(args.src_file))}',
         ]
-        print('Run this on the target side:\n', flush=True)
+        print('Run this on the destination side:\n', flush=True)
         print(' \\\n    '.join(lines), end='\n\n', flush=True)
 
     await serve(src_file=args.src_file, port=args.port or 0, psk=psk, bind=args.bind, on_listening=print_retrieve_command)
 
 
 async def retrieve_command(args: Namespace) -> None:
-    await retrieve(host=args.host, port=args.port, psk=psk_from_args(args), target_file=args.target_file, block_size=args.block_size)
+    await retrieve(host=args.host, port=args.port, psk=psk_from_args(args), dst_file=args.dst_file, block_size=args.block_size)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

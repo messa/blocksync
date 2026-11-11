@@ -2,6 +2,17 @@
 
 Copy large files (VM images, LVM snapshots etc.) between Linux servers.
 
+```mermaid
+flowchart LR
+    subgraph destination [Destination host]
+        dst[(destination file)] --- retrieve[blocksync.py retrieve]
+    end
+    subgraph source [Source host]
+        serve[blocksync.py serve] --- src[(source file)]
+    end
+    retrieve -- "connects (TCP, TLS-PSK)" --> serve
+```
+
 Features:
 
 - Encryption and authentication using TLS-PSK
@@ -20,7 +31,7 @@ Python version support:
 ## Goals and non-goals
 
 blocksync is meant for one-off copying of one large file or block device to another server,
-especially when a (possibly outdated) copy already exists on the target, so that only the changed blocks need to be transferred.
+especially when a (possibly outdated) copy already exists on the destination host, so that only the changed blocks need to be transferred.
 
 Why not something else:
 
@@ -34,8 +45,8 @@ Non-goals and limitations:
 - **The source must not change during the transfer.**
   Use a snapshot (e.g. LVM snapshot) or stop whatever writes to the source.
   blocksync does not detect a changing source; the result would be an inconsistent copy.
-- Pull only: the target side (`retrieve`) connects to the source side (`serve`).
-  The target must be able to reach the TCP port of the source; there is no reverse mode.
+- Pull only: the destination side (`retrieve`) connects to the source side (`serve`).
+  The destination host must be able to reach the TCP port of the source host; there is no reverse mode.
   If the source is behind NAT, consider using IPv6 - it typically works
   even between individual VMs on hosts that share a single IPv4 address.
   Another option is a VPN such as [Tailscale](https://tailscale.com/), which connects servers behind NAT directly to each other.
@@ -43,8 +54,8 @@ Non-goals and limitations:
 - No continuous replication - `serve` exits after one successful transfer.
 - Holes in sparse files are not preserved and no discard/TRIM is issued:
   changed blocks containing only zeros are written as ordinary data.
-  A new target file is therefore fully allocated, and so is a thin-provisioned volume.
-- The target is written in place, see [Interrupted transfer](#interrupted-transfer).
+  A new destination file is therefore fully allocated, and so is a thin-provisioned volume.
+- The destination is written in place, see [Interrupted transfer](#interrupted-transfer).
 
 ## Installation
 
@@ -68,16 +79,16 @@ blocksync.py serve --src-file /dev/vg0/vm_example_root
 `serve` prints a ready-to-use `retrieve` command, for example:
 
 ```shell
-# Target side
+# Destination side
 blocksync.py retrieve \
     --host source.example.com \
     --port 40123 \
     --psk 'z8kQ...' \
-    --target-file /dev/vg0/vm_example_root
+    --dst-file /dev/vg0/vm_example_root
 ```
 
-The printed host name is the FQDN as the source server knows it.
-It may not be resolvable or reachable from the target - replace it with a suitable host name or IP address if needed.
+The printed host name is the FQDN as the source host knows it.
+It may not be resolvable or reachable from the destination host - replace it with a suitable host name or IP address if needed.
 `serve` listens on both IPv4 and IPv6, so an IPv6 address can be used as `--host` when the source has no public IPv4 address.
 
 With an explicit port and a pre-shared key file:
@@ -92,12 +103,12 @@ blocksync.py serve \
     --psk-file pre-shared-key \
     --src-file /dev/vg0/vm_example_root
 
-# Target side
+# Destination side
 blocksync.py retrieve \
     --host source.example.com \
     --port 9001 \
     --psk-file pre-shared-key \
-    --target-file /dev/vg0/vm_example_root
+    --dst-file /dev/vg0/vm_example_root
 ```
 
 ### Options
@@ -119,9 +130,9 @@ If none of `--psk`, `--psk-file` and `--insecure` is given, `serve` generates a 
 
 | Option | Description |
 | --- | --- |
-| `--host HOST` | Host name or IP address of the source server. Required. |
-| `--port PORT` | TCP port of the source server. Required. |
-| `--target-file PATH` | Target file or block device. Required. |
+| `--host HOST` | Host name or IP address of the source host. Required. |
+| `--port PORT` | TCP port of the source host. Required. |
+| `--dst-file PATH` | Destination file or block device. Required. |
 | `--psk VALUE` | Pre-shared key. |
 | `--psk-file PATH` | File containing the pre-shared key. |
 | `--insecure` | No TLS, no key. |
@@ -134,13 +145,13 @@ One of `--psk`, `--psk-file` or `--insecure` is required for `retrieve`.
 | Code | Meaning |
 | --- | --- |
 | 0 | `retrieve`: the transfer was completed. `serve`: one transfer was completed (`done` command received). |
-| 1 | Error - connection failed, I/O error, target too small, protocol error etc. Details are logged to stderr. |
+| 1 | Error - connection failed, I/O error, destination too small, protocol error etc. Details are logged to stderr. |
 | 2 | Invalid command line options. |
 
 ### Interrupted transfer
 
-The target is written in place.
-If `retrieve` fails or is interrupted, the target contains a mix of old and new blocks and must not be used.
+The destination is written in place.
+If `retrieve` fails or is interrupted, the destination contains a mix of old and new blocks and must not be used.
 
 To fix it, simply run `retrieve` again.
 `serve` keeps running after a failed connection, and blocks that were already transferred are not transferred again.
@@ -192,7 +203,7 @@ If you don't provide `--port`, a random unused TCP port is chosen.
 If you don't provide `--psk`, `--psk-file` or `--insecure`, a random key is generated.
 
 On start, `serve` prints an example `retrieve` command to stdout.
-It contains the host name (FQDN) of the server, the port, the key option (including the generated key value) and the `--src-file` path as `--target-file`.
+It contains the host name (FQDN) of the source host, the port, the key option (including the generated key value) and the `--src-file` path as `--dst-file`.
 Logs go to stderr.
 
 `serve` is single-purpose: it exits after one successful transfer (`done` command).
@@ -213,6 +224,36 @@ After the client connects (and the TLS-PSK handshake succeeds, unless `--insecur
    Client does not need to wait for a response before sending the next command (pipelining).
 
 If the client receives anything other than `blocksync/1\n`, it closes the connection and ends with an error.
+
+Typical session:
+
+```mermaid
+sequenceDiagram
+    participant C as Client<br/>blocksync.py retrieve
+    participant S as Server<br/>blocksync.py serve
+    C->>S: connect (TCP, TLS-PSK)
+    S-->>C: blocksync/1
+    C->>S: meta
+    S-->>C: source file size
+    loop for each block (1 MiB by default)
+        Note over C: read block of destination file,<br/>compute its SHA3-256 hash
+        C->>S: retr - offset, length, hash
+        Note over S: read block of source file,<br/>compare hashes
+        alt hash matches
+            S-->>C: no data needed
+        else hash differs
+            S-->>C: block data (raw or zstd-compressed)
+            Note over C: write block to destination file
+        end
+    end
+    Note over C: truncate destination file<br/>to source file size, fsync
+    C->>S: done
+    S-->>C: ok
+    Note over S: exit
+```
+
+The diagram is simplified: the client actually sends several `retr` commands ahead
+without waiting for responses (pipelining), and the `nozs` command and error responses are not shown.
 
 Each command is 4 ASCII bytes followed by its params.
 All integers are unsigned big-endian.
@@ -238,7 +279,7 @@ Commands:
   - Params:
     - `offset` (uint64): offset of the block in the file (in bytes)
     - `length` (uint32): length of the block (in bytes), at least 1 and at most 64 MiB
-    - `hash` (32 bytes): SHA3-256 of the target block contents
+    - `hash` (32 bytes): SHA3-256 of the destination block contents
   - Response:
     - `code` (1 byte)
       - `\x00`: hash matches, no data need to be returned
@@ -273,20 +314,20 @@ Options `--host`, `--port` and one of `--psk`, `--psk-file` or `--insecure` are 
 1. Connect to the server and receive `blocksync/1\n`.
 2. Retrieve metadata (`meta`).
    If Zstandard is not available, send `nozs`.
-3. Check the target:
+3. Check the destination:
    - Block device must be at least as large as the source file, otherwise `retrieve` ends with an error before writing anything.
      If it is larger, the part beyond the source file size is left untouched.
    - Regular file is created if it does not exist; it is never truncated before the transfer.
-4. Read target blocks (default block size 1 MiB, see `--block-size`), compute their hashes and send them to the server (`retr`).
+4. Read destination blocks (default block size 1 MiB, see `--block-size`), compute their hashes and send them to the server (`retr`).
    A limited number of `retr` commands is sent ahead without waiting for responses.
    - The last block is shorter if the source file size is not a multiple of the block size.
-   - If the target file is shorter than the source file (or was just created), the hash is computed from the data that is there -
+   - If the destination file is shorter than the source file (or was just created), the hash is computed from the data that is there -
      possibly fewer bytes than the block length, or no bytes at all. Such a hash never matches, so the block is transferred.
-5. Receive responses and write changed blocks to the target in place.
-6. Truncate a regular file to the source file size and `fsync` the target.
+5. Receive responses and write changed blocks to the destination in place.
+6. Truncate a regular file to the source file size and `fsync` the destination.
 7. Send `done` and wait for the response.
 
-The target is synced before `done` is sent, because `serve` exits after `done`.
+The destination is synced before `done` is sent, because `serve` exits after `done`.
 If the truncate or `fsync` fails, `serve` is still running and `retrieve` can be run again.
 
 ### Performance
@@ -295,7 +336,7 @@ The bottleneck should be disk read I/O or network speed, not the CPU:
 
 - A single connection is used, with pipelining: up to 64 blocks (at most 256 MiB) are "in flight",
   i.e. requested by `retr` and not completely processed yet.
-- `retrieve` reads and hashes target blocks in a thread pool, several blocks ahead,
+- `retrieve` reads and hashes destination blocks in a thread pool, several blocks ahead,
   and sends the `retr` commands in the order of the blocks.
   Received blocks are decompressed and written in the thread pool, too.
 - `serve` processes pipelined `retr` commands in a thread pool as well - source blocks are read, hashed and compressed

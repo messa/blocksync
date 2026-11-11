@@ -7,7 +7,7 @@ API expected by these tests:
   - `psk=None` means `--insecure`
   - `port=0` chooses a random port; `on_listening` is called with the actual port once listening
   - returns after one successful transfer
-- `async def retrieve(*, host: str, port: int, psk: str | None, target_file: Path, block_size: int = ...) -> RetrieveStats`
+- `async def retrieve(*, host: str, port: int, psk: str | None, dst_file: Path, block_size: int = ...) -> RetrieveStats`
 - `RetrieveStats` with attributes `unchanged_blocks`, `raw_blocks`, `compressed_blocks`
 """
 
@@ -66,10 +66,10 @@ async def start_server(src_file: Path, psk: str | None) -> tuple[Task[None], int
     return server_task, port_future.result()
 
 
-async def transfer(src_file: Path, target_file: Path, psk: str | None = 'secret') -> RetrieveStats:
+async def transfer(src_file: Path, dst_file: Path, psk: str | None = 'secret') -> RetrieveStats:
     server_task, port = await start_server(src_file, psk)
     try:
-        stats = await retrieve(host='127.0.0.1', port=port, psk=psk, target_file=target_file, block_size=BLOCK_SIZE)
+        stats = await retrieve(host='127.0.0.1', port=port, psk=psk, dst_file=dst_file, block_size=BLOCK_SIZE)
         # serve exits after one successful transfer
         await server_task
     finally:
@@ -82,7 +82,7 @@ def changed(data: bytes, offset: int) -> bytes:
 
 
 @mark.parametrize(
-    ('make_target', 'expected_transferred'),
+    ('make_dst', 'expected_transferred'),
     [
         (None, SOURCE_BLOCKS),
         (lambda s: b'', SOURCE_BLOCKS),
@@ -94,37 +94,37 @@ def changed(data: bytes, offset: int) -> bytes:
     ],
     ids=['missing', 'empty', 'identical', 'byte-changed-in-middle', 'last-partial-block-changed', 'shorter', 'longer'],
 )
-def test_transfer(tmp_path: Path, make_target: Callable[[bytes], bytes] | None, expected_transferred: int) -> None:
-    src, target = tmp_path / 'src', tmp_path / 'target'
+def test_transfer(tmp_path: Path, make_dst: Callable[[bytes], bytes] | None, expected_transferred: int) -> None:
+    src, dst = tmp_path / 'src', tmp_path / 'dst'
     src.write_bytes(SOURCE)
-    if make_target:
-        target.write_bytes(make_target(SOURCE))
+    if make_dst:
+        dst.write_bytes(make_dst(SOURCE))
 
-    stats = run_with_timeout(transfer(src, target))
+    stats = run_with_timeout(transfer(src, dst))
 
-    assert target.read_bytes() == SOURCE
+    assert dst.read_bytes() == SOURCE
     assert stats.raw_blocks + stats.compressed_blocks == expected_transferred
     assert stats.unchanged_blocks == SOURCE_BLOCKS - expected_transferred
 
 
 def test_insecure_transfer(tmp_path: Path) -> None:
-    src, target = tmp_path / 'src', tmp_path / 'target'
+    src, dst = tmp_path / 'src', tmp_path / 'dst'
     src.write_bytes(SOURCE)
-    target.write_bytes(changed(SOURCE, 7))
+    dst.write_bytes(changed(SOURCE, 7))
 
-    stats = run_with_timeout(transfer(src, target, psk=None))
+    stats = run_with_timeout(transfer(src, dst, psk=None))
 
-    assert target.read_bytes() == SOURCE
+    assert dst.read_bytes() == SOURCE
     assert stats.raw_blocks + stats.compressed_blocks == 1
 
 
 def test_zero_blocks_are_compressed_if_zstd_is_available(tmp_path: Path) -> None:
-    src, target = tmp_path / 'src', tmp_path / 'target'
+    src, dst = tmp_path / 'src', tmp_path / 'dst'
     src.write_bytes(bytes(10 * BLOCK_SIZE))
 
-    stats = run_with_timeout(transfer(src, target))
+    stats = run_with_timeout(transfer(src, dst))
 
-    assert target.read_bytes() == bytes(10 * BLOCK_SIZE)
+    assert dst.read_bytes() == bytes(10 * BLOCK_SIZE)
     if zstd:
         assert (stats.compressed_blocks, stats.raw_blocks) == (10, 0)
     else:
@@ -132,21 +132,21 @@ def test_zero_blocks_are_compressed_if_zstd_is_available(tmp_path: Path) -> None
 
 
 def test_wrong_key_fails_and_server_keeps_waiting(tmp_path: Path) -> None:
-    src, target = tmp_path / 'src', tmp_path / 'target'
+    src, dst = tmp_path / 'src', tmp_path / 'dst'
     src.write_bytes(SOURCE)
 
     async def scenario() -> None:
         server_task, port = await start_server(src, 'right')
         try:
             with raises((OSError, EOFError)):
-                await retrieve(host='127.0.0.1', port=port, psk='wrong', target_file=target, block_size=BLOCK_SIZE)
-            await retrieve(host='127.0.0.1', port=port, psk='right', target_file=target, block_size=BLOCK_SIZE)
+                await retrieve(host='127.0.0.1', port=port, psk='wrong', dst_file=dst, block_size=BLOCK_SIZE)
+            await retrieve(host='127.0.0.1', port=port, psk='right', dst_file=dst, block_size=BLOCK_SIZE)
             await server_task
         finally:
             server_task.cancel()
 
     run_with_timeout(scenario())
-    assert target.read_bytes() == SOURCE
+    assert dst.read_bytes() == SOURCE
 
 
 # Raw protocol tests - check the wire format as documented in README.md,
@@ -207,7 +207,7 @@ def test_protocol_pipelined_commands(tmp_path: Path) -> None:
 
 
 def test_protocol_retr_beyond_end_closes_connection_and_server_keeps_waiting(tmp_path: Path) -> None:
-    src, target = tmp_path / 'src', tmp_path / 'target'
+    src, dst = tmp_path / 'src', tmp_path / 'dst'
     src.write_bytes(SOURCE)
 
     async def scenario() -> None:
@@ -220,10 +220,10 @@ def test_protocol_retr_beyond_end_closes_connection_and_server_keeps_waiting(tmp
                 assert await reader.read() == b''
             writer.close()
 
-            await retrieve(host='127.0.0.1', port=port, psk=None, target_file=target, block_size=BLOCK_SIZE)
+            await retrieve(host='127.0.0.1', port=port, psk=None, dst_file=dst, block_size=BLOCK_SIZE)
             await server_task
         finally:
             server_task.cancel()
 
     run_with_timeout(scenario())
-    assert target.read_bytes() == SOURCE
+    assert dst.read_bytes() == SOURCE
