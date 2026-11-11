@@ -31,13 +31,53 @@ def test_serve_needs_only_src_file() -> None:
         ['serve', '--src-file', 's', '--psk', 'k', '--psk-file', 'f'],
         ['serve', '--src-file', 's', '--psk', 'k', '--insecure'],
         ['retrieve', '--host', 'h', '--port', '9001', '--psk-file', 'f', '--insecure', '--target-file', 't'],
+        ['serve', '--src-file', 's', '--port', '0'],
+        ['retrieve', '--host', 'h', '--port', '0', '--psk', 'k', '--target-file', 't'],
+        ['retrieve', '--host', 'h', '--port', '65536', '--psk', 'k', '--target-file', 't'],
+        ['retrieve', '--host', 'h', '--port', 'abc', '--psk', 'k', '--target-file', 't'],
+        ['retrieve', '--host', 'h', '--port', '9001', '--psk', 'k', '--target-file', 't', '--block-size', '0'],
+        ['retrieve', '--host', 'h', '--port', '9001', '--psk', 'k', '--target-file', 't', '--block-size', str(64 * 1024 * 1024 + 1)],
+        ['retrieve', '--host', 'h', '--port', '9001', '--psk', 'k', '--target-file', 't', '--block-size', '1M'],
     ],
-    ids=['retrieve-without-port', 'retrieve-without-key', 'psk-and-psk-file', 'psk-and-insecure', 'psk-file-and-insecure'],
+    ids=[
+        'retrieve-without-port',
+        'retrieve-without-key',
+        'psk-and-psk-file',
+        'psk-and-insecure',
+        'psk-file-and-insecure',
+        'serve-port-zero',
+        'retrieve-port-zero',
+        'port-too-large',
+        'port-not-a-number',
+        'block-size-zero',
+        'block-size-too-large',
+        'block-size-not-a-number',
+    ],
 )
 def test_invalid_options(argv: list[str]) -> None:
     with raises(SystemExit) as exc_info:
         main(argv)
     assert exc_info.value.code == 2
+
+
+@mark.parametrize('port', [1, 65535])
+def test_port_limits_are_accepted(port: int) -> None:
+    args = build_parser().parse_args(['serve', '--src-file', 's', '--port', str(port)])
+    assert args.port == port
+    args = build_parser().parse_args(['retrieve', '--host', 'h', '--port', str(port), '--psk', 'k', '--target-file', 't'])
+    assert args.port == port
+
+
+@mark.parametrize('block_size', [1, 64 * 1024 * 1024])
+def test_block_size_limits_are_accepted(block_size: int) -> None:
+    argv = ['retrieve', '--host', 'h', '--port', '9001', '--psk', 'k', '--target-file', 't', '--block-size', str(block_size)]
+    args = build_parser().parse_args(argv)
+    assert args.block_size == block_size
+
+
+def test_block_size_defaults_to_1_mib() -> None:
+    args = build_parser().parse_args(['retrieve', '--host', 'h', '--port', '9001', '--psk', 'k', '--target-file', 't'])
+    assert args.block_size == 1024 * 1024
 
 
 def test_serve_prints_working_retrieve_command_with_generated_key(tmp_path: Path) -> None:
