@@ -1,6 +1,8 @@
 from asyncio import StreamReader, create_subprocess_exec, run, timeout
 from asyncio.subprocess import PIPE
 from collections.abc import Callable
+from contextlib import redirect_stderr
+from io import StringIO
 from pathlib import Path
 from random import Random
 from shlex import split
@@ -8,7 +10,7 @@ from sys import executable
 
 from pytest import mark, raises
 
-from blocksync import build_parser, main
+from blocksync import build_parser
 
 SCRIPT = Path(__file__).parent.parent / 'blocksync.py'
 TIMEOUT = 30
@@ -23,21 +25,63 @@ def test_serve_needs_only_src_file() -> None:
     assert not args.insecure
 
 
-@mark.parametrize(
-    'argv',
-    [
-        ['retrieve', '--host', 'h', '--psk', 'k', '--target-file', 't'],
-        ['retrieve', '--host', 'h', '--port', '9001', '--target-file', 't'],
-        ['serve', '--src-file', 's', '--psk', 'k', '--psk-file', 'f'],
-        ['serve', '--src-file', 's', '--psk', 'k', '--insecure'],
-        ['retrieve', '--host', 'h', '--port', '9001', '--psk-file', 'f', '--insecure', '--target-file', 't'],
-    ],
-    ids=['retrieve-without-port', 'retrieve-without-key', 'psk-and-psk-file', 'psk-and-insecure', 'psk-file-and-insecure'],
-)
-def test_invalid_options(argv: list[str]) -> None:
-    with raises(SystemExit) as exc_info:
-        main(argv)
+RETRIEVE = ['retrieve', '--host', 'h', '--psk', 'k', '--target-file', 't']
+
+
+def test_missing_or_conflicting_options() -> None:
+    assert 'required: --port' in usage_error(RETRIEVE)
+    without_key = ['retrieve', '--host', 'h', '--port', '9001', '--target-file', 't']
+    assert 'one of the arguments --psk --psk-file --insecure is required' in usage_error(without_key)
+    assert 'not allowed with' in usage_error(['serve', '--src-file', 's', '--psk', 'k', '--psk-file', 'f'])
+    assert 'not allowed with' in usage_error(['serve', '--src-file', 's', '--psk', 'k', '--insecure'])
+    assert 'not allowed with' in usage_error([*RETRIEVE, '--port', '9001', '--insecure'])
+
+
+def test_invalid_port() -> None:
+    assert 'argument --port' in usage_error(['serve', '--src-file', 's', '--port', '0'])
+    assert 'argument --port' in usage_error([*RETRIEVE, '--port', '0'])
+    assert 'argument --port' in usage_error([*RETRIEVE, '--port', '65536'])
+    assert 'argument --port' in usage_error([*RETRIEVE, '--port', 'abc'])
+
+
+def test_invalid_block_size() -> None:
+    assert 'argument --block-size' in usage_error([*RETRIEVE, '--port', '9001', '--block-size', '0'])
+    assert 'argument --block-size' in usage_error([*RETRIEVE, '--port', '9001', '--block-size', str(64 * 1024 * 1024 + 1)])
+    assert 'argument --block-size' in usage_error([*RETRIEVE, '--port', '9001', '--block-size', '1M'])
+
+
+def usage_error(argv: list[str]) -> str:
+    """
+    Parse argv, check it fails with a usage error (exit code 2) and return the error message
+    (the last line of stderr, without the usage line).
+    """
+    stderr = StringIO()
+    with redirect_stderr(stderr), raises(SystemExit) as exc_info:
+        build_parser().parse_args(argv)
     assert exc_info.value.code == 2
+    message = stderr.getvalue().splitlines()[-1]
+    assert ' error: ' in message
+    return message
+
+
+@mark.parametrize('port', [1, 65535])
+def test_port_limits_are_accepted(port: int) -> None:
+    args = build_parser().parse_args(['serve', '--src-file', 's', '--port', str(port)])
+    assert args.port == port
+    args = build_parser().parse_args(['retrieve', '--host', 'h', '--port', str(port), '--psk', 'k', '--target-file', 't'])
+    assert args.port == port
+
+
+@mark.parametrize('block_size', [1, 64 * 1024 * 1024])
+def test_block_size_limits_are_accepted(block_size: int) -> None:
+    argv = ['retrieve', '--host', 'h', '--port', '9001', '--psk', 'k', '--target-file', 't', '--block-size', str(block_size)]
+    args = build_parser().parse_args(argv)
+    assert args.block_size == block_size
+
+
+def test_block_size_defaults_to_1_mib() -> None:
+    args = build_parser().parse_args(['retrieve', '--host', 'h', '--port', '9001', '--psk', 'k', '--target-file', 't'])
+    assert args.block_size == 1024 * 1024
 
 
 def test_serve_prints_working_retrieve_command_with_generated_key(tmp_path: Path) -> None:
