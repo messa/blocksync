@@ -25,7 +25,7 @@ def build_parser() -> ArgumentParser:
     retrieve.add_argument('--host', required=True, help='server host name or address')
     retrieve.add_argument('--port', type=port_number, required=True, help='server TCP port')
     add_key_options(retrieve, required=True)
-    retrieve.add_argument('--target-file', type=Path, required=True, help='target file or block device')
+    retrieve.add_argument('--dst-file', type=Path, required=True, help='destination file or block device')
     retrieve.add_argument(
         '--block-size',
         type=block_size,
