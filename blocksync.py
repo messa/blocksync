@@ -4,29 +4,57 @@
 See README.md for usage and protocol description.
 """
 
-from argparse import ArgumentParser
+from argparse import ArgumentParser, ArgumentTypeError, RawDescriptionHelpFormatter
 from collections.abc import Sequence
 from pathlib import Path
 
-DEFAULT_PORT = 9001
+DEFAULT_BLOCK_SIZE = 1024 * 1024
+MAX_BLOCK_SIZE = 64 * 1024 * 1024
 
 
 def build_parser() -> ArgumentParser:
-    parser = ArgumentParser(prog='blocksync.py', description=__doc__)
+    parser = ArgumentParser(prog='blocksync.py', description=__doc__, formatter_class=RawDescriptionHelpFormatter)
     subparsers = parser.add_subparsers(dest='command', required=True)
 
     serve = subparsers.add_parser('serve', help='serve source file to clients')
-    serve.add_argument('--port', type=int, default=DEFAULT_PORT)
-    serve.add_argument('--psk-file', type=Path, required=True)
-    serve.add_argument('--src-file', type=Path, required=True)
+    serve.add_argument('--port', type=port_number, help='TCP port to listen on (default: random unused port)')
+    add_key_options(serve, required=False)
+    serve.add_argument('--src-file', type=Path, required=True, help='source file or block device')
 
     retrieve = subparsers.add_parser('retrieve', help='retrieve file from server')
-    retrieve.add_argument('--host', required=True)
-    retrieve.add_argument('--port', type=int, default=DEFAULT_PORT)
-    retrieve.add_argument('--psk-file', type=Path, required=True)
-    retrieve.add_argument('--target-file', type=Path, required=True)
+    retrieve.add_argument('--host', required=True, help='server host name or address')
+    retrieve.add_argument('--port', type=port_number, required=True, help='server TCP port')
+    add_key_options(retrieve, required=True)
+    retrieve.add_argument('--target-file', type=Path, required=True, help='target file or block device')
+    retrieve.add_argument(
+        '--block-size',
+        type=block_size,
+        default=DEFAULT_BLOCK_SIZE,
+        help=f'block size in bytes (default: {DEFAULT_BLOCK_SIZE}, max: {MAX_BLOCK_SIZE})',
+    )
 
     return parser
+
+
+def add_key_options(parser: ArgumentParser, *, required: bool) -> None:
+    group = parser.add_mutually_exclusive_group(required=required)
+    group.add_argument('--psk', metavar='VALUE', help='pre-shared key value')
+    group.add_argument('--psk-file', metavar='PATH', type=Path, help='file containing the pre-shared key')
+    group.add_argument('--insecure', action='store_true', help='do not use TLS-PSK (use only over secure connections, e.g. VPN)')
+
+
+def port_number(value: str) -> int:
+    port = int(value)
+    if not 0 < port < 65536:
+        raise ArgumentTypeError(f'port must be between 1 and 65535: {value}')
+    return port
+
+
+def block_size(value: str) -> int:
+    size = int(value)
+    if not 0 < size <= MAX_BLOCK_SIZE:
+        raise ArgumentTypeError(f'block size must be between 1 and {MAX_BLOCK_SIZE}: {value}')
+    return size
 
 
 def main(argv: Sequence[str] | None = None) -> int:
