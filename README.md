@@ -3,25 +3,14 @@
 Copy large files (VM images, LVM snapshots etc.) between Linux servers.
 
 ```mermaid
-sequenceDiagram
-    participant S as Source server<br/>blocksync.py serve
-    participant T as Target server<br/>blocksync.py retrieve
-    T->>S: connect (TCP, TLS-PSK)
-    T->>S: meta
-    S-->>T: source file size
-    loop for each block (1 MiB by default)
-        Note over T: read block of target file,<br/>compute its SHA3-256 hash
-        T->>S: retr - offset, length, hash
-        Note over S: read block of source file,<br/>compare hashes
-        alt hash matches
-            S-->>T: no data needed
-        else hash differs
-            S-->>T: block data (zstd-compressed)
-            Note over T: write block to target file
-        end
+flowchart LR
+    subgraph target [Target server]
+        tgt[(target file)] --- retrieve[blocksync.py retrieve]
     end
-    T->>S: done
-    Note over S: exit
+    subgraph source [Source server]
+        serve[blocksync.py serve] --- src[(source file)]
+    end
+    retrieve -- "connects (TCP, TLS-PSK)" --> serve
 ```
 
 > **Status: work in progress.**
@@ -239,6 +228,30 @@ After the client connects (and the TLS-PSK handshake succeeds, unless `--insecur
    Client does not need to wait for a response before sending the next command (pipelining).
 
 If the client receives anything other than `blocksync/1\n`, it closes the connection and ends with an error.
+
+Typical session:
+
+```mermaid
+sequenceDiagram
+    participant S as Source server<br/>blocksync.py serve
+    participant T as Target server<br/>blocksync.py retrieve
+    T->>S: connect (TCP, TLS-PSK)
+    T->>S: meta
+    S-->>T: source file size
+    loop for each block (1 MiB by default)
+        Note over T: read block of target file,<br/>compute its SHA3-256 hash
+        T->>S: retr - offset, length, hash
+        Note over S: read block of source file,<br/>compare hashes
+        alt hash matches
+            S-->>T: no data needed
+        else hash differs
+            S-->>T: block data (zstd-compressed)
+            Note over T: write block to target file
+        end
+    end
+    T->>S: done
+    Note over S: exit
+```
 
 Each command is 4 ASCII bytes followed by its params.
 All integers are unsigned big-endian.
