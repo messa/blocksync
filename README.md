@@ -233,8 +233,8 @@ Typical session:
 
 ```mermaid
 sequenceDiagram
-    participant S as Source server<br/>blocksync.py serve
     participant T as Target server<br/>blocksync.py retrieve
+    participant S as Source server<br/>blocksync.py serve
     T->>S: connect (TCP, TLS-PSK)
     T->>S: meta
     S-->>T: source file size
