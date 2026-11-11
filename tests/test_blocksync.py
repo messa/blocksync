@@ -58,7 +58,8 @@ def run_with_timeout[T](coro: Coroutine[Any, Any, T]) -> T:
 async def start_server(src_file: Path, psk: str | None) -> tuple[Task[None], int]:
     port_future: Future[int] = get_running_loop().create_future()
     server_task = create_task(serve(src_file=src_file, port=0, psk=psk, on_listening=port_future.set_result))
-    await wait([port_future, server_task], return_when=FIRST_COMPLETED)
+    futures: list[Future[Any]] = [port_future, server_task]
+    await wait(futures, return_when=FIRST_COMPLETED)
     if server_task.done():
         server_task.result()
         raise AssertionError('serve() returned before listening')

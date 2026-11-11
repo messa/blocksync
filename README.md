@@ -2,10 +2,6 @@
 
 Copy large files (VM images, LVM snapshots etc.) between Linux servers.
 
-> **Status: work in progress.**
-> This README describes the agreed design.
-> `blocksync.py` is only a skeleton so far - `serve` and `retrieve` are not implemented yet.
-
 Features:
 
 - Encryption and authentication using TLS-PSK
@@ -293,8 +289,22 @@ Options `--host`, `--port` and one of `--psk`, `--psk-file` or `--insecure` are 
 The target is synced before `done` is sent, because `serve` exits after `done`.
 If the truncate or `fsync` fails, `serve` is still running and `retrieve` can be run again.
 
-Blocks are read and hashed using a thread pool so that hashing does not become a bottleneck.
-The bottleneck should be disk read I/O or network speed.
+### Performance
+
+The bottleneck should be disk read I/O or network speed, not the CPU:
+
+- A single connection is used, with pipelining: up to 64 blocks (at most 256 MiB) are "in flight",
+  i.e. requested by `retr` and not completely processed yet.
+- `retrieve` reads and hashes target blocks in a thread pool, several blocks ahead,
+  and sends the `retr` commands in the order of the blocks.
+  Received blocks are decompressed and written in the thread pool, too.
+- `serve` processes pipelined `retr` commands in a thread pool as well - source blocks are read, hashed and compressed
+  in parallel - and sends the responses in the order of the commands.
+  It stops reading further commands while 64 blocks (or 256 MiB) are waiting to be processed and sent.
+- Disk I/O, SHA3-256 and Zstandard release the GIL, so the threads really run in parallel.
+  The thread pool has `min(32, CPU count + 4)` threads.
+
+What remains single-threaded is the network I/O of the connection, including TLS encryption.
 
 Progress is printed to stderr.
 
