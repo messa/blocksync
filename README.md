@@ -42,6 +42,7 @@ Non-goals and limitations:
   The target must be able to reach the TCP port of the source; there is no reverse mode.
   If the source is behind NAT, consider using IPv6 - it typically works
   even between individual VMs on hosts that share a single IPv4 address.
+  Another option is a VPN such as [Tailscale](https://tailscale.com/), which connects servers behind NAT directly to each other.
 - One file per run. No directories, no file metadata (owner, permissions, mtime).
 - No continuous replication - `serve` exits after one successful transfer.
 - Holes in sparse files are not preserved and no discard/TRIM is issued:
