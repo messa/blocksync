@@ -25,12 +25,12 @@ def test_serve_needs_only_src_file() -> None:
     assert not args.insecure
 
 
-RETRIEVE = ['retrieve', '--host', 'h', '--psk', 'k', '--target-file', 't']
+RETRIEVE = ['retrieve', '--host', 'h', '--psk', 'k', '--dst-file', 't']
 
 
 def test_missing_or_conflicting_options() -> None:
     assert 'required: --port' in usage_error(RETRIEVE)
-    without_key = ['retrieve', '--host', 'h', '--port', '9001', '--target-file', 't']
+    without_key = ['retrieve', '--host', 'h', '--port', '9001', '--dst-file', 't']
     assert 'one of the arguments --psk --psk-file --insecure is required' in usage_error(without_key)
     assert 'not allowed with' in usage_error(['serve', '--src-file', 's', '--psk', 'k', '--psk-file', 'f'])
     assert 'not allowed with' in usage_error(['serve', '--src-file', 's', '--psk', 'k', '--insecure'])
@@ -68,19 +68,19 @@ def usage_error(argv: list[str]) -> str:
 def test_port_limits_are_accepted(port: int) -> None:
     args = build_parser().parse_args(['serve', '--src-file', 's', '--port', str(port)])
     assert args.port == port
-    args = build_parser().parse_args(['retrieve', '--host', 'h', '--port', str(port), '--psk', 'k', '--target-file', 't'])
+    args = build_parser().parse_args(['retrieve', '--host', 'h', '--port', str(port), '--psk', 'k', '--dst-file', 't'])
     assert args.port == port
 
 
 @mark.parametrize('block_size', [1, 64 * 1024 * 1024])
 def test_block_size_limits_are_accepted(block_size: int) -> None:
-    argv = ['retrieve', '--host', 'h', '--port', '9001', '--psk', 'k', '--target-file', 't', '--block-size', str(block_size)]
+    argv = ['retrieve', '--host', 'h', '--port', '9001', '--psk', 'k', '--dst-file', 't', '--block-size', str(block_size)]
     args = build_parser().parse_args(argv)
     assert args.block_size == block_size
 
 
 def test_block_size_defaults_to_1_mib() -> None:
-    args = build_parser().parse_args(['retrieve', '--host', 'h', '--port', '9001', '--psk', 'k', '--target-file', 't'])
+    args = build_parser().parse_args(['retrieve', '--host', 'h', '--port', '9001', '--psk', 'k', '--dst-file', 't'])
     assert args.block_size == 1024 * 1024
 
 
@@ -92,7 +92,7 @@ def test_serve_prints_working_retrieve_command_with_generated_key(tmp_path: Path
 
     assert int(option_value(retrieve_args, '--port')) > 0
     assert option_value(retrieve_args, '--psk')
-    assert (tmp_path / 'target').read_bytes() == source
+    assert (tmp_path / 'dst').read_bytes() == source
 
 
 def test_psk_file_and_psk_with_surrounding_whitespace_are_equivalent(tmp_path: Path) -> None:
@@ -107,12 +107,12 @@ def test_psk_file_and_psk_with_surrounding_whitespace_are_equivalent(tmp_path: P
 
     run(serve_and_retrieve(tmp_path, serve_args=['--psk-file', str(tmp_path / 'psk')], edit_retrieve_args=use_psk_option))
 
-    assert (tmp_path / 'target').read_bytes() == source
+    assert (tmp_path / 'dst').read_bytes() == source
 
 
 async def serve_and_retrieve(tmp_path: Path, serve_args: list[str], edit_retrieve_args: Callable[[list[str]], list[str]]) -> list[str]:
     """
-    Run `serve` on tmp_path/src, run the retrieve command it prints (with --host and --target-file replaced)
+    Run `serve` on tmp_path/src, run the retrieve command it prints (with --host and --dst-file replaced)
     and check that both processes succeed. Returns the printed retrieve command arguments.
     """
     serve = await create_subprocess_exec(
@@ -123,9 +123,9 @@ async def serve_and_retrieve(tmp_path: Path, serve_args: list[str], edit_retriev
         async with timeout(TIMEOUT):
             assert serve.stdout
             printed_args = await read_retrieve_command(serve.stdout)
-            assert option_value(printed_args, '--target-file') == str(tmp_path / 'src')
+            assert option_value(printed_args, '--dst-file') == str(tmp_path / 'src')
             retrieve_args = replace_option(printed_args, '--host', '127.0.0.1')
-            retrieve_args = replace_option(retrieve_args, '--target-file', str(tmp_path / 'target'))
+            retrieve_args = replace_option(retrieve_args, '--dst-file', str(tmp_path / 'dst'))
             retrieve_args = edit_retrieve_args(retrieve_args)
             retrieve = await create_subprocess_exec(executable, str(SCRIPT), 'retrieve', *retrieve_args)
             assert await retrieve.wait() == 0
