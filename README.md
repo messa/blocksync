@@ -2,6 +2,28 @@
 
 Copy large files (VM images, LVM snapshots etc.) between Linux servers.
 
+```mermaid
+sequenceDiagram
+    participant S as Source server<br/>blocksync.py serve
+    participant T as Target server<br/>blocksync.py retrieve
+    T->>S: connect (TCP, TLS-PSK)
+    T->>S: meta
+    S-->>T: source file size
+    loop for each block (1 MiB by default)
+        Note over T: read block of target file,<br/>compute its SHA3-256 hash
+        T->>S: retr - offset, length, hash
+        Note over S: read block of source file,<br/>compare hashes
+        alt hash matches
+            S-->>T: no data needed
+        else hash differs
+            S-->>T: block data (zstd-compressed)
+            Note over T: write block to target file
+        end
+    end
+    T->>S: done
+    Note over S: exit
+```
+
 > **Status: work in progress.**
 > This README describes the agreed design.
 > `blocksync.py` is only a skeleton so far - `serve` and `retrieve` are not implemented yet.
